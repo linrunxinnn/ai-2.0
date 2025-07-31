@@ -155,3 +155,10 @@
   border-color: #ff4d4f !important;
   color: white !important;
 }
+
+.audioMessage {
+  width: 100%;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}

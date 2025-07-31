@@ -24,7 +24,7 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordedAudio, setRecordedAudio] = useState(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [playingStatus, setPlayingStatus] = useState({});
 
   // ========== refs ==========
   const messageEndRef = useRef(null);
@@ -36,6 +36,7 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
 
   const user = JSON.parse(localStorage.getItem("user"));
   const userId = user?.id;
+  let index = 0; //记录信息id
 
   // Socket连接
   const { socket, isConnected } = useSocket();
@@ -49,6 +50,7 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
       setMessages((prev) => [
         ...prev,
         {
+          key: index++,
           content: data.content,
           role: "assistant",
           timestamp: new Date(),
@@ -63,6 +65,7 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
       setMessages((prev) => [
         ...prev,
         {
+          key: index++,
           content: "[AI语音回复]",
           role: "assistant",
           timestamp: new Date(),
@@ -280,6 +283,7 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
 
       // 添加用户消息到界面
       const userMessage = {
+        key: index++,
         content: `[语音消息 ${recordingDuration}秒]`,
         role: "user",
         timestamp: new Date(),
@@ -322,7 +326,7 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
   };
 
   // ========== 音频播放 ==========
-  const playAudioFromBuffer = (audioBuffer) => {
+  const playAudioFromBuffer = (audioBuffer, id) => {
     try {
       console.log("播放音频，大小:", audioBuffer.byteLength);
 
@@ -330,55 +334,55 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
 
-      setIsPlaying(true);
+      setPlayingStatus((prev) => ({ ...prev, [id]: true }));
 
       audio.addEventListener("ended", () => {
         console.log("音频播放完成");
-        setIsPlaying(false);
+        setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         URL.revokeObjectURL(audioUrl);
       });
 
       audio.addEventListener("error", (e) => {
         console.error("音频播放错误:", e);
-        setIsPlaying(false);
+        setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         URL.revokeObjectURL(audioUrl);
         message.error("音频播放失败");
       });
 
       audio.play().catch((err) => {
         console.error("播放失败:", err);
-        setIsPlaying(false);
+        setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         URL.revokeObjectURL(audioUrl);
         message.error("音频播放失败");
       });
     } catch (error) {
       console.error("创建音频播放器失败:", error);
-      setIsPlaying(false);
+      setPlayingStatus((prev) => ({ ...prev, [id]: false }));
       message.error("音频播放失败");
     }
   };
 
   // 播放用户录音
-  const playUserAudio = (audioBlob) => {
+  const playUserAudio = (audioBlob, id) => {
     try {
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
 
-      setIsPlaying(true);
+      setPlayingStatus((prev) => ({ ...prev, [id]: true }));
 
       audio.addEventListener("ended", () => {
-        setIsPlaying(false);
+        setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         URL.revokeObjectURL(audioUrl);
       });
 
       audio.addEventListener("error", () => {
-        setIsPlaying(false);
+        setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         URL.revokeObjectURL(audioUrl);
         message.error("播放失败");
       });
 
       audio.play().catch(() => {
-        setIsPlaying(false);
+        setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         URL.revokeObjectURL(audioUrl);
         message.error("播放失败");
       });
@@ -670,11 +674,11 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
                     {msg.role === "user" && msg.audioBlob && (
                       <Button
                         size="small"
-                        onClick={() => playUserAudio(msg.audioBlob)}
-                        disabled={isPlaying}
+                        onClick={() => playUserAudio(msg.audioBlob, msg.id)}
+                        disabled={playingStatus[msg.key]}
                         className={styles.playButton}
                       >
-                        {isPlaying ? "播放中..." : "播放"}
+                        {playingStatus[msg.key] ? "播放中..." : "播放"}
                       </Button>
                     )}
 
@@ -682,11 +686,13 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
                     {msg.role === "assistant" && msg.audioBuffer && (
                       <Button
                         size="small"
-                        onClick={() => playAudioFromBuffer(msg.audioBuffer)}
-                        disabled={isPlaying}
+                        onClick={() =>
+                          playAudioFromBuffer(msg.audioBuffer, msg.id)
+                        }
+                        disabled={playingStatus[msg.key]}
                         className={styles.playButton}
                       >
-                        {isPlaying ? "播放中..." : "播放"}
+                        {playingStatus[msg.key] ? "播放中..." : "播放"}
                       </Button>
                     )}
 
