@@ -83,6 +83,40 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
       setIsSending(false);
     };
 
+    const handlePushData = (data) => {
+      console.log("收到推送数据:", data);
+      // 将输出存储到后台
+    };
+
+    const handleTableData = (data) => {
+      console.log("收到表格数据:", data);
+      console.log("11111111", {
+        id: Date.now(), // 生成唯一ID
+        type: "table",
+        content: data.title || "表格数据", // 使用传入的标题或默认值
+        role: "assistant", // 标记为AI消息
+        timestamp: new Date(), // 当前时间
+        tableData: {
+          header: data.tabledData?.header || {}, // 确保header存在，即使为空对象
+          row: data.tableData?.row || [], // 确保row存在，即使为空数组
+        },
+      });
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now(), // 生成唯一ID
+          type: "table",
+          content: data.title || "表格数据", // 使用传入的标题或默认值
+          role: "assistant", // 标记为AI消息
+          timestamp: new Date(), // 当前时间
+          tableData: {
+            header: data.tabledData?.header || {}, // 确保header存在，即使为空对象
+            row: data.tableData?.row || [], // 确保row存在，即使为空数组
+          },
+        },
+      ]);
+    };
+
     const handleError = (error) => {
       console.error("Socket错误:", error);
       message.error("连接错误: " + error.message);
@@ -97,6 +131,8 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
     socket.on("text_message", handleTextMessage);
     socket.on("audio_message", handleAudioMessage);
     socket.on("summary", handleSummary);
+    socket.on("push_data", handlePushData);
+    socket.on("table_data", handleTableData);
     socket.on("processing", handleProcessing);
     socket.on("error", handleError);
 
@@ -104,6 +140,8 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
       socket.off("text_message", handleTextMessage);
       socket.off("audio_message", handleAudioMessage);
       socket.off("summary", handleSummary);
+      socket.off("push_data", handlePushData);
+      socket.off("table_data", handleTableData);
       socket.off("processing", handleProcessing);
       socket.off("error", handleError);
     };
@@ -652,9 +690,9 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
     <div className={styles.chatWrapper}>
       <div className={styles.activatedLayout}>
         <div className={styles.chatContent} ref={scrollRef}>
-          {messages.map((msg, i) => (
+          {messages.map((msg) => (
             <div
-              key={i}
+              key={msg.id}
               className={`${styles.chatMessage} ${
                 msg.role === "user" ? styles.messageRight : styles.messageLeft
               }`}
@@ -707,8 +745,53 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
                       </Button>
                     )}
                   </div>
+                ) : msg.type === "table" ? (
+                  // 新增表格渲染逻辑
+                  <div className={styles.dynamicTable}>
+                    {msg.content && (
+                      <div className={styles.tableTitle}>{msg.content}</div>
+                    )}
+
+                    <div className={styles.tableScrollWrapper}>
+                      <table>
+                        {/* 自动生成表头（如果header为空则使用第一行数据的key） */}
+                        <thead>
+                          <tr>
+                            {(Object.keys(msg.tableData.header).length > 0
+                              ? Object.entries(msg.tableData.header)
+                              : msg.tableData.row[0]
+                              ? Object.keys(msg.tableData.row[0]).map((key) => [
+                                  key,
+                                  key,
+                                ])
+                              : []
+                            ).map(([key, title]) => (
+                              <th key={key}>{title}</th>
+                            ))}
+                          </tr>
+                        </thead>
+
+                        {/* 表体 */}
+                        <tbody>
+                          {msg.tableData.row.map((row, rowIndex) => (
+                            <tr key={rowIndex}>
+                              {(Object.keys(msg.tableData.header).length > 0
+                                ? Object.keys(msg.tableData.header)
+                                : Object.keys(row || {})
+                              ).map((key) => (
+                                <td key={`${rowIndex}-${key}`}>
+                                  {row?.[key] ?? ""}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 ) : (
-                  msg.content
+                  // 默认文本渲染
+                  <span className={styles.textContent}>{msg.content}</span>
                 )}
               </div>
             </div>

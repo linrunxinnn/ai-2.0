@@ -162,3 +162,42 @@
   gap: 8px;
   align-items: flex-start;
 }
+
+/* 表格容器 */
+.dynamicTable {
+  margin: 8px 0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+/* 表格滚动容器（响应式） */
+.tableScrollWrapper {
+  max-width: 100%;
+  overflow-x: auto;
+  background: white;
+  border: 1px solid #e8e8e8;
+}
+
+/* 基础表格样式 */
+.dynamicTable table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 300px; /* 最小宽度 */
+}
+
+.dynamicTable th,
+.dynamicTable td {
+  padding: 8px 12px;
+  border: 1px solid #e8e8e8;
+  text-align: left;
+}
+
+/* AI消息表格特殊样式 */
+.messageLeft .dynamicTable th {
+  background-color: #f0f7ff;
+}
+
+/* 用户消息表格特殊样式 */
+.messageRight .dynamicTable th {
+  background-color: #f5f5f5;
+}
