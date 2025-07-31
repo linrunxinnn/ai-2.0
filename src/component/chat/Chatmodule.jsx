@@ -24,7 +24,7 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordedAudio, setRecordedAudio] = useState(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [playingStatus, setPlayingStatus] = useState({});
 
   // ========== refs ==========
   const messageEndRef = useRef(null);
@@ -33,9 +33,11 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const recordingTimerRef = useRef(null);
+  const [isPlaying, setIsPlaying] = useState(false); //记录播放状态
 
   const user = JSON.parse(localStorage.getItem("user"));
   const userId = user?.id;
+  const [index, setIndex] = useState(Date.now());
 
   // Socket连接
   const { socket, isConnected } = useSocket();
@@ -46,9 +48,11 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
 
     const handleTextMessage = (data) => {
       console.log("收到文字消息:", data);
+      if (userId === data.userId) return;
       setMessages((prev) => [
         ...prev,
         {
+          id: Date.now(),
           content: data.content,
           role: "assistant",
           timestamp: new Date(),
@@ -57,27 +61,61 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
       setIsSending(false);
     };
 
-    const handleAudioMessage = (audioBuffer) => {
-      console.log("收到语音消息:", audioBuffer);
+    const handleAudioMessage = (data) => {
+      console.log("收到语音消息:", data);
+
+      const audioBlob = new Blob([data.input.content], {
+        type: `audio/${data.input.format || "webm"}`,
+      });
 
       setMessages((prev) => [
         ...prev,
         {
+          id: Date.now(), // 使用更可靠的ID
           content: "[AI语音回复]",
           role: "assistant",
           timestamp: new Date(),
           type: "audio",
-          audioBuffer: audioBuffer,
+          audioBlob: audioBlob,
+          format: data.input.format,
         },
       ]);
+
       setIsSending(false);
     };
 
     const handleSummary = (data) => {
       console.log("收到总结:", data);
-      generatePDF(data.output);
-      message.success("总结已生成并下载");
+      if (data.user_id === userId) {
+        generatePDF(data.output);
+        message.success("总结已生成并下载");
+      }
       setIsSending(false);
+    };
+
+    const handlePushData = (data) => {
+      console.log("收到推送数据:", data);
+      // 将输出存储到后台
+    };
+
+    const handleTableData = (data) => {
+      console.log("收到表格数据:", data);
+      if (data.user_id === userId) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now(), // 生成唯一ID
+            type: "table",
+            content: data.title || "表格数据", // 使用传入的标题或默认值
+            role: "assistant", // 标记为AI消息
+            timestamp: new Date(), // 当前时间
+            tableData: {
+              header: data.tabledData?.header || {}, // 确保header存在，即使为空对象
+              row: data.tableData?.row || [], // 确保row存在，即使为空数组
+            },
+          },
+        ]);
+      }
     };
 
     const handleError = (error) => {
@@ -94,6 +132,8 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
     socket.on("text_message", handleTextMessage);
     socket.on("audio_message", handleAudioMessage);
     socket.on("summary", handleSummary);
+    socket.on("push_data", handlePushData);
+    socket.on("table_data", handleTableData);
     socket.on("processing", handleProcessing);
     socket.on("error", handleError);
 
@@ -101,6 +141,8 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
       socket.off("text_message", handleTextMessage);
       socket.off("audio_message", handleAudioMessage);
       socket.off("summary", handleSummary);
+      socket.off("push_data", handlePushData);
+      socket.off("table_data", handleTableData);
       socket.off("processing", handleProcessing);
       socket.off("error", handleError);
     };
@@ -280,7 +322,8 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
 
       // 添加用户消息到界面
       const userMessage = {
-        content: `[语音消息 ${recordingDuration}秒]`,
+        id: Date.now(),
+        content: `[语音消息 ${Math.round(recordingDuration)}秒]`,
         role: "user",
         timestamp: new Date(),
         type: "audio",
@@ -322,24 +365,31 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
   };
 
   // ========== 音频播放 ==========
-  const playAudioFromBuffer = (audioBuffer) => {
+  const playAudioFromBuffer = (audioBuffer, id) => {
     try {
+      if (isPlaying) {
+        message.warning("请等待当前音频播放完毕");
+        return;
+      }
+      setIsPlaying(true);
       console.log("播放音频，大小:", audioBuffer.byteLength);
 
       const audioBlob = new Blob([audioBuffer], { type: "audio/wav" });
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
 
-      setIsPlaying(true);
+      setPlayingStatus((prev) => ({ ...prev, [id]: true }));
 
       audio.addEventListener("ended", () => {
         console.log("音频播放完成");
+        setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         setIsPlaying(false);
         URL.revokeObjectURL(audioUrl);
       });
 
       audio.addEventListener("error", (e) => {
         console.error("音频播放错误:", e);
+        setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         setIsPlaying(false);
         URL.revokeObjectURL(audioUrl);
         message.error("音频播放失败");
@@ -348,48 +398,63 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
       audio.play().catch((err) => {
         console.error("播放失败:", err);
         setIsPlaying(false);
+        setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         URL.revokeObjectURL(audioUrl);
         message.error("音频播放失败");
       });
     } catch (error) {
       console.error("创建音频播放器失败:", error);
       setIsPlaying(false);
+      setPlayingStatus((prev) => ({ ...prev, [id]: false }));
       message.error("音频播放失败");
     }
   };
 
   // 播放用户录音
-  const playUserAudio = (audioBlob) => {
+  const playUserAudio = (audioBlob, id) => {
+    if (isPlaying) {
+      message.warning("请等待当前音频播放完毕");
+      return;
+    }
+    setIsPlaying(true);
     try {
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
 
-      setIsPlaying(true);
+      setPlayingStatus((prev) => ({ ...prev, [id]: true }));
 
       audio.addEventListener("ended", () => {
-        setIsPlaying(false);
+        setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         URL.revokeObjectURL(audioUrl);
+        setIsPlaying(false);
       });
 
       audio.addEventListener("error", () => {
-        setIsPlaying(false);
+        setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         URL.revokeObjectURL(audioUrl);
         message.error("播放失败");
+        setIsPlaying(false);
       });
 
       audio.play().catch(() => {
-        setIsPlaying(false);
+        setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         URL.revokeObjectURL(audioUrl);
         message.error("播放失败");
+        setIsPlaying(false);
       });
     } catch (error) {
       console.error("播放用户音频失败:", error);
       message.error("播放失败");
+      setIsPlaying(false);
     }
   };
 
   // 播放音频消息 (原有函数)
   const playAudioMessage = (audioUrl) => {
+    if (isPlaying) {
+      message.warn("正在播放其他音频");
+      return;
+    }
     const audio = new Audio(audioUrl);
     audio.play().catch((err) => {
       console.error("播放音频失败:", err);
@@ -648,9 +713,9 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
     <div className={styles.chatWrapper}>
       <div className={styles.activatedLayout}>
         <div className={styles.chatContent} ref={scrollRef}>
-          {messages.map((msg, i) => (
+          {messages.map((msg) => (
             <div
-              key={i}
+              key={msg.id}
               className={`${styles.chatMessage} ${
                 msg.role === "user" ? styles.messageRight : styles.messageLeft
               }`}
@@ -670,23 +735,25 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
                     {msg.role === "user" && msg.audioBlob && (
                       <Button
                         size="small"
-                        onClick={() => playUserAudio(msg.audioBlob)}
-                        disabled={isPlaying}
+                        onClick={() => playUserAudio(msg.audioBlob, msg.id)}
+                        disabled={playingStatus[msg.id]}
                         className={styles.playButton}
                       >
-                        {isPlaying ? "播放中..." : "播放"}
+                        {playingStatus[msg.id] ? "播放中..." : "播放"}
                       </Button>
                     )}
 
                     {/* AI音频播放按钮 */}
-                    {msg.role === "assistant" && msg.audioBuffer && (
+                    {msg.role === "assistant" && msg.audioBlob && (
                       <Button
                         size="small"
-                        onClick={() => playAudioFromBuffer(msg.audioBuffer)}
-                        disabled={isPlaying}
+                        onClick={() =>
+                          playAudioFromBuffer(msg.audioBlob, msg.id)
+                        }
+                        disabled={playingStatus[msg.id]}
                         className={styles.playButton}
                       >
-                        {isPlaying ? "播放中..." : "播放"}
+                        {playingStatus[msg.id] ? "播放中..." : "播放"}
                       </Button>
                     )}
 
@@ -701,8 +768,53 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
                       </Button>
                     )}
                   </div>
+                ) : msg.type === "table" ? (
+                  // 新增表格渲染逻辑
+                  <div className={styles.dynamicTable}>
+                    {msg.content && (
+                      <div className={styles.tableTitle}>{msg.content}</div>
+                    )}
+
+                    <div className={styles.tableScrollWrapper}>
+                      <table>
+                        {/* 自动生成表头（如果header为空则使用第一行数据的key） */}
+                        <thead>
+                          <tr>
+                            {(Object.keys(msg.tableData.header).length > 0
+                              ? Object.entries(msg.tableData.header)
+                              : msg.tableData.row[0]
+                              ? Object.keys(msg.tableData.row[0]).map((key) => [
+                                  key,
+                                  key,
+                                ])
+                              : []
+                            ).map(([key, title]) => (
+                              <th key={key}>{title}</th>
+                            ))}
+                          </tr>
+                        </thead>
+
+                        {/* 表体 */}
+                        <tbody>
+                          {msg.tableData.row.map((row, rowIndex) => (
+                            <tr key={rowIndex}>
+                              {(Object.keys(msg.tableData.header).length > 0
+                                ? Object.keys(msg.tableData.header)
+                                : Object.keys(row || {})
+                              ).map((key) => (
+                                <td key={`${rowIndex}-${key}`}>
+                                  {row?.[key] ?? ""}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 ) : (
-                  msg.content
+                  // 默认文本渲染
+                  <span className={styles.textContent}>{msg.content}</span>
                 )}
               </div>
             </div>
