@@ -6,9 +6,9 @@ import {
   AudioMutedOutlined,
 } from "@ant-design/icons";
 import styles from "./ChatModule.module.css";
-import { useSocket } from "../../hooks/useSocket";
 import { jsPDF } from "jspdf";
 import "jspdf-autotable";
+import socketManager from "../../utils/socketManager.js";
 
 const { TextArea } = Input;
 
@@ -34,119 +34,150 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
   const audioChunksRef = useRef([]);
   const recordingTimerRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false); //记录播放状态
+  const [isConnected, setIsConnected] = useState(false);
+  const isInitialized = useRef(false);
 
   const user = JSON.parse(localStorage.getItem("user"));
   const userId = user?.id;
-  const [index, setIndex] = useState(Date.now());
 
   // Socket连接
-  const { socket, isConnected } = useSocket();
 
   // ========== Socket事件监听 ==========
   useEffect(() => {
-    if (!socket) return;
+    // 只初始化一次
+    if (!isInitialized.current) {
+      socketManager.initAllSockets();
+      isInitialized.current = true;
+    }
 
-    const handleTextMessage = (data) => {
-      console.log("收到文字消息:", data);
-      if (userId === data.userId) return;
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now(),
-          content: data.content,
-          role: "assistant",
-          timestamp: new Date(),
-        },
-      ]);
-      setIsSending(false);
-    };
+    // 设置回调函数
+    socketManager.setCallbacks("text", {
+      onTextMessage: async (data) => {
+        // 检查用户最后发送的消息类型来决定如何处理回复
+        const lastUserMessage = [...messages]
+          .reverse()
+          .find((msg) => msg.role === "user");
+        const isLastInputAudio = lastUserMessage?.type === "audio";
 
-    const handleAudioMessage = (data) => {
-      console.log("收到语音消息:", data);
+        if (isLastInputAudio) {
+          try {
+            // 用户最后发送的是语音，将回复转换为语音并播放
+            const audioBuffer = await socketManager.requestTTS(data.content);
 
-      const audioBlob = new Blob([data.input.content], {
-        type: `audio/${data.input.format || "webm"}`,
-      });
+            // 播放语音
+            const audioBlob = new Blob([audioBuffer], { type: "audio/wav" });
+            const audioUrl = URL.createObjectURL(audioBlob);
+            const audio = new Audio(audioUrl);
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now(), // 使用更可靠的ID
-          content: "[AI语音回复]",
-          role: "assistant",
-          timestamp: new Date(),
-          type: "audio",
-          audioBlob: audioBlob,
-          format: data.input.format,
-        },
-      ]);
+            audio.play().catch((err) => {
+              console.error("播放TTS音频失败:", err);
+              message.error("语音播放失败");
+            });
 
-      setIsSending(false);
-    };
-
-    const handleSummary = (data) => {
-      console.log("收到总结:", data);
-      if (data.user_id === userId) {
-        generatePDF(data.output);
-        message.success("总结已生成并下载");
-      }
-      setIsSending(false);
-    };
-
-    const handlePushData = (data) => {
-      console.log("收到推送数据:", data);
-      // 将输出存储到后台
-    };
-
-    const handleTableData = (data) => {
-      console.log("收到表格数据:", data);
-      if (data.user_id === userId) {
+            // 同时将文本消息添加到聊天记录
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: Date.now(),
+                content: data.content,
+                role: "assistant",
+                timestamp: new Date(),
+              },
+            ]);
+          } catch (error) {
+            console.error("TTS转换失败:", error);
+            // TTS失败时只显示文本
+            setMessages((prev) => [
+              ...prev,
+              {
+                content: data.content,
+                role: "assistant",
+                timestamp: new Date(),
+              },
+            ]);
+          }
+        } else {
+          // 用户最后发送的是文本，直接显示回复
+          setMessages((prev) => [
+            ...prev,
+            {
+              content: data.content,
+              role: "assistant",
+              timestamp: new Date(),
+            },
+          ]);
+        }
+      },
+      onTableMessage: (data) => {
+        // 处理表格消息
         setMessages((prev) => [
           ...prev,
           {
-            id: Date.now(), // 生成唯一ID
+            id: Date.now(),
             type: "table",
-            content: data.title || "表格数据", // 使用传入的标题或默认值
-            role: "assistant", // 标记为AI消息
-            timestamp: new Date(), // 当前时间
+            content: data.title || "表格数据",
+            role: "assistant",
+            timestamp: new Date(),
             tableData: {
-              header: data.tabledData?.header || {}, // 确保header存在，即使为空对象
-              row: data.tableData?.row || [], // 确保row存在，即使为空数组
+              header: data.tableData?.header || {},
+              row: data.tableData?.row || [],
             },
           },
         ]);
-      }
-    };
+      },
+      onStorage: (data) => {
+        // 处理存储消息
+        console.log("收到存储消息:", data);
+        // 这里可以调用接口向后台存储数据
+        // 例如：saveToBackend(data.storageData);
+      },
+      onProcessing: (data) => {
+        console.log("AI正在处理中...");
+      },
+      onError: (error) => {
+        console.error("Socket错误:", error);
+      },
+    });
 
-    const handleError = (error) => {
-      console.error("Socket错误:", error);
-      message.error("连接错误: " + error.message);
-      setIsSending(false);
-    };
+    socketManager.setCallbacks("tts", {
+      onMessage: (audioBuffer) => {
+        // 播放音频
+        const audio = new Audio();
+        audio.src = URL.createObjectURL(new Blob([audioBuffer]));
+        audio.play();
+      },
+    });
 
-    const handleProcessing = () => {
-      console.log("AI正在处理中...");
-    };
+    socketManager.setCallbacks("stt", {
+      onMessage: (text) => {
+        console.log("识别结果:", text);
+        // 可以选择是否自动发送识别结果
+        socketManager.sendTextMessage(text);
+      },
+    });
 
-    // 监听Socket事件
-    socket.on("text_message", handleTextMessage);
-    socket.on("audio_message", handleAudioMessage);
-    socket.on("summary", handleSummary);
-    socket.on("push_data", handlePushData);
-    socket.on("table_data", handleTableData);
-    socket.on("processing", handleProcessing);
-    socket.on("error", handleError);
+    // 监听连接状态
+    const statusChecker = setInterval(() => {
+      const status = socketManager.getStatus();
+      setIsConnected(
+        status.text === "connected" &&
+          status.tts === "connected" &&
+          status.stt === "connected"
+      );
+    }, 1000);
 
     return () => {
-      socket.off("text_message", handleTextMessage);
-      socket.off("audio_message", handleAudioMessage);
-      socket.off("summary", handleSummary);
-      socket.off("push_data", handlePushData);
-      socket.off("table_data", handleTableData);
-      socket.off("processing", handleProcessing);
-      socket.off("error", handleError);
+      clearInterval(statusChecker);
+      // 注意：这里不要关闭Socket，因为可能还有其他地方需要使用
     };
-  }, [socket]);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      // 如果这是应用中唯一使用Socket的地方，可以关闭连接
+      socketManager.closeAllSockets();
+    };
+  }, []);
 
   // ========== 录音核心功能 ==========
 
@@ -308,19 +339,15 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
       return;
     }
 
-    if (!socket || !isConnected) {
+    if (!isConnected) {
       message.error("连接未建立，请稍后重试");
       return;
     }
 
     try {
       setIsSending(true);
-      console.log("准备发送录音...");
 
-      // 转换为ArrayBuffer
-      const arrayBuffer = await recordedAudio.arrayBuffer();
-
-      // 添加用户消息到界面
+      // 创建用户消息对象（用于UI显示）
       const userMessage = {
         id: Date.now(),
         content: `[语音消息 ${Math.round(recordingDuration)}秒]`,
@@ -330,36 +357,49 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
         audioBlob: recordedAudio,
       };
 
+      // 先更新UI显示语音消息
       setMessages((prev) => [...prev, userMessage]);
-
-      // 如果是第一条消息，获取标题
-      if (messages.length === 0) {
-        getTitle("政务服务办理");
-      }
 
       setActivated(true);
 
-      // 通过Socket发送
-      socket.emit("audio_message", {
-        user_id: userId,
-        info: { ...user },
-        input: {
-          type: "audio",
-          content: arrayBuffer,
-          format: "webm",
-          duration: recordingDuration,
-        },
-      });
+      // 将录音转换为ArrayBuffer
+      const arrayBuffer = await recordedAudio.arrayBuffer();
 
-      console.log("录音发送成功，大小:", arrayBuffer.byteLength, "bytes");
-      message.success("语音消息发送成功");
+      // 使用STT服务将语音转换为文字
+      console.log("正在将语音转换为文字...");
+      const textResult = await socketManager.requestSTT(arrayBuffer);
+
+      console.log("语音识别结果:", textResult);
+
+      if (messages.length === 0) {
+        getTitle(textResult);
+      }
+
+      // 将识别出的文字发送出去
+      if (textResult) {
+        const sendResult = socketManager.sendTextMessage(textResult);
+
+        if (sendResult) {
+          message.success("语音消息发送成功");
+          console.log("语音消息发送成功:", textResult);
+        } else {
+          throw new Error("文字消息发送失败");
+        }
+      } else {
+        throw new Error("语音识别失败");
+      }
 
       // 清理录音数据
       setRecordedAudio(null);
       setRecordingDuration(0);
     } catch (error) {
       console.error("发送录音失败:", error);
-      message.error("发送语音消息失败，请重试");
+      message.error(`发送语音消息失败: ${error.message || "请重试"}`);
+
+      // 在失败时也清理录音数据
+      setRecordedAudio(null);
+      setRecordingDuration(0);
+    } finally {
       setIsSending(false);
     }
   };
@@ -511,7 +551,7 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
 
   // ========== 文字消息发送 ==========
   const handleSend = useCallback(async () => {
-    if (!socket || !isConnected) {
+    if (!isConnected) {
       message.error("连接未建立，请稍后重试");
       return;
     }
@@ -540,33 +580,24 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
       setActivated(true);
 
       // 通过Socket发送文字消息
-      socket.emit("text_message", {
-        user_id: userId,
-        info: { ...user },
-        input: {
-          type: "text",
-          content: newMessage.content,
-        },
-      });
+      const sendResult = socketManager.sendTextMessage(newMessage.content);
 
-      setMessages((prev) => [...prev, newMessage]);
-      console.log("发送文字信息：", newMessage.content);
-      setInput("");
+      if (sendResult) {
+        // 发送成功，更新UI
+        setMessages((prev) => [...prev, newMessage]);
+        console.log("发送文字信息：", newMessage.content);
+        setInput("");
+      } else {
+        // 发送失败
+        throw new Error("消息发送失败");
+      }
     } catch (error) {
       console.error("发送消息失败:", error);
       message.error("发送信息失败，请稍后重试");
+    } finally {
       setIsSending(false);
     }
-  }, [
-    socket,
-    isConnected,
-    input,
-    messages.length,
-    userId,
-    user,
-    isListening,
-    getTitle,
-  ]);
+  }, [input, messages.length, isListening, getTitle, isConnected]);
 
   // ========== PDF生成 ==========
   const generatePDF = (output) => {

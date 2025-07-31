@@ -3,6 +3,7 @@ import { Outlet } from "react-router-dom";
 import { useEffect } from "react";
 import { useDispatch } from "react-redux";
 import { setUserInfo } from "./store/slice/userSlice.js";
+import viteReact from "@vitejs/plugin-react";
 
 function App() {
   const dispatch = useDispatch();
