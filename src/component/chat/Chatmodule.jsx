@@ -33,10 +33,11 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const recordingTimerRef = useRef(null);
+  const [isPlaying, setIsPlaying] = useState(false); //记录播放状态
 
   const user = JSON.parse(localStorage.getItem("user"));
   const userId = user?.id;
-  let index = 0; //记录信息id
+  const [index, setIndex] = useState(Date.now());
 
   // Socket连接
   const { socket, isConnected } = useSocket();
@@ -47,10 +48,11 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
 
     const handleTextMessage = (data) => {
       console.log("收到文字消息:", data);
+      if (userId === data.userId) return;
       setMessages((prev) => [
         ...prev,
         {
-          key: index++,
+          id: Date.now(),
           content: data.content,
           role: "assistant",
           timestamp: new Date(),
@@ -59,27 +61,35 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
       setIsSending(false);
     };
 
-    const handleAudioMessage = (audioBuffer) => {
-      console.log("收到语音消息:", audioBuffer);
+    const handleAudioMessage = (data) => {
+      console.log("收到语音消息:", data);
+
+      const audioBlob = new Blob([data.input.content], {
+        type: `audio/${data.input.format || "webm"}`,
+      });
 
       setMessages((prev) => [
         ...prev,
         {
-          key: index++,
+          id: Date.now(), // 使用更可靠的ID
           content: "[AI语音回复]",
           role: "assistant",
           timestamp: new Date(),
           type: "audio",
-          audioBuffer: audioBuffer,
+          audioBlob: audioBlob,
+          format: data.input.format,
         },
       ]);
+
       setIsSending(false);
     };
 
     const handleSummary = (data) => {
       console.log("收到总结:", data);
-      generatePDF(data.output);
-      message.success("总结已生成并下载");
+      if (data.user_id === userId) {
+        generatePDF(data.output);
+        message.success("总结已生成并下载");
+      }
       setIsSending(false);
     };
 
@@ -90,31 +100,22 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
 
     const handleTableData = (data) => {
       console.log("收到表格数据:", data);
-      console.log("11111111", {
-        id: Date.now(), // 生成唯一ID
-        type: "table",
-        content: data.title || "表格数据", // 使用传入的标题或默认值
-        role: "assistant", // 标记为AI消息
-        timestamp: new Date(), // 当前时间
-        tableData: {
-          header: data.tabledData?.header || {}, // 确保header存在，即使为空对象
-          row: data.tableData?.row || [], // 确保row存在，即使为空数组
-        },
-      });
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now(), // 生成唯一ID
-          type: "table",
-          content: data.title || "表格数据", // 使用传入的标题或默认值
-          role: "assistant", // 标记为AI消息
-          timestamp: new Date(), // 当前时间
-          tableData: {
-            header: data.tabledData?.header || {}, // 确保header存在，即使为空对象
-            row: data.tableData?.row || [], // 确保row存在，即使为空数组
+      if (data.user_id === userId) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now(), // 生成唯一ID
+            type: "table",
+            content: data.title || "表格数据", // 使用传入的标题或默认值
+            role: "assistant", // 标记为AI消息
+            timestamp: new Date(), // 当前时间
+            tableData: {
+              header: data.tabledData?.header || {}, // 确保header存在，即使为空对象
+              row: data.tableData?.row || [], // 确保row存在，即使为空数组
+            },
           },
-        },
-      ]);
+        ]);
+      }
     };
 
     const handleError = (error) => {
@@ -321,8 +322,8 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
 
       // 添加用户消息到界面
       const userMessage = {
-        key: index++,
-        content: `[语音消息 ${recordingDuration}秒]`,
+        id: Date.now(),
+        content: `[语音消息 ${Math.round(recordingDuration)}秒]`,
         role: "user",
         timestamp: new Date(),
         type: "audio",
@@ -366,6 +367,11 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
   // ========== 音频播放 ==========
   const playAudioFromBuffer = (audioBuffer, id) => {
     try {
+      if (isPlaying) {
+        message.warning("请等待当前音频播放完毕");
+        return;
+      }
+      setIsPlaying(true);
       console.log("播放音频，大小:", audioBuffer.byteLength);
 
       const audioBlob = new Blob([audioBuffer], { type: "audio/wav" });
@@ -377,24 +383,28 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
       audio.addEventListener("ended", () => {
         console.log("音频播放完成");
         setPlayingStatus((prev) => ({ ...prev, [id]: false }));
+        setIsPlaying(false);
         URL.revokeObjectURL(audioUrl);
       });
 
       audio.addEventListener("error", (e) => {
         console.error("音频播放错误:", e);
         setPlayingStatus((prev) => ({ ...prev, [id]: false }));
+        setIsPlaying(false);
         URL.revokeObjectURL(audioUrl);
         message.error("音频播放失败");
       });
 
       audio.play().catch((err) => {
         console.error("播放失败:", err);
+        setIsPlaying(false);
         setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         URL.revokeObjectURL(audioUrl);
         message.error("音频播放失败");
       });
     } catch (error) {
       console.error("创建音频播放器失败:", error);
+      setIsPlaying(false);
       setPlayingStatus((prev) => ({ ...prev, [id]: false }));
       message.error("音频播放失败");
     }
@@ -402,6 +412,11 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
 
   // 播放用户录音
   const playUserAudio = (audioBlob, id) => {
+    if (isPlaying) {
+      message.warning("请等待当前音频播放完毕");
+      return;
+    }
+    setIsPlaying(true);
     try {
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
@@ -411,27 +426,35 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
       audio.addEventListener("ended", () => {
         setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         URL.revokeObjectURL(audioUrl);
+        setIsPlaying(false);
       });
 
       audio.addEventListener("error", () => {
         setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         URL.revokeObjectURL(audioUrl);
         message.error("播放失败");
+        setIsPlaying(false);
       });
 
       audio.play().catch(() => {
         setPlayingStatus((prev) => ({ ...prev, [id]: false }));
         URL.revokeObjectURL(audioUrl);
         message.error("播放失败");
+        setIsPlaying(false);
       });
     } catch (error) {
       console.error("播放用户音频失败:", error);
       message.error("播放失败");
+      setIsPlaying(false);
     }
   };
 
   // 播放音频消息 (原有函数)
   const playAudioMessage = (audioUrl) => {
+    if (isPlaying) {
+      message.warn("正在播放其他音频");
+      return;
+    }
     const audio = new Audio(audioUrl);
     audio.play().catch((err) => {
       console.error("播放音频失败:", err);
@@ -713,24 +736,24 @@ const ChatModule = ({ onSend, initialMessages = [], getTitle }) => {
                       <Button
                         size="small"
                         onClick={() => playUserAudio(msg.audioBlob, msg.id)}
-                        disabled={playingStatus[msg.key]}
+                        disabled={playingStatus[msg.id]}
                         className={styles.playButton}
                       >
-                        {playingStatus[msg.key] ? "播放中..." : "播放"}
+                        {playingStatus[msg.id] ? "播放中..." : "播放"}
                       </Button>
                     )}
 
                     {/* AI音频播放按钮 */}
-                    {msg.role === "assistant" && msg.audioBuffer && (
+                    {msg.role === "assistant" && msg.audioBlob && (
                       <Button
                         size="small"
                         onClick={() =>
-                          playAudioFromBuffer(msg.audioBuffer, msg.id)
+                          playAudioFromBuffer(msg.audioBlob, msg.id)
                         }
-                        disabled={playingStatus[msg.key]}
+                        disabled={playingStatus[msg.id]}
                         className={styles.playButton}
                       >
-                        {playingStatus[msg.key] ? "播放中..." : "播放"}
+                        {playingStatus[msg.id] ? "播放中..." : "播放"}
                       </Button>
                     )}
 
