@@ -9,7 +9,7 @@ import { decryptData } from "../../utils/encrypt.js";
 
 //导入axios的登录，退出账号等，这里假定导入为axios
 
-//登录
+//账号登录
 export const loginUser = createAsyncThunk(
   "/user/login",
   async (credentials, { rejectWithValue }) => {
@@ -120,6 +120,7 @@ const userSlice = createSlice({
         state.name = action.payload.name;
         state.id = action.payload.id;
         state.error = null;
+        localStorage.setItem("user", JSON.stringify(action.payload));
       });
   },
 });

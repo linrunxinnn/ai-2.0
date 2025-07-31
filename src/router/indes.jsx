@@ -4,6 +4,7 @@ import Home from "../pages/Home.jsx";
 import Sign from "../pages/Sign.jsx";
 import Collect from "../pages/Collect.jsx";
 import ManagerRouter from "../component/protect/Protectrouter.jsx";
+import Personal from "../pages/Personal.jsx";
 
 export const router = createBrowserRouter([
   {
@@ -30,6 +31,14 @@ export const router = createBrowserRouter([
           </ManagerRouter>
         ),
       },
+      {
+        path: "/personal",
+        element: (
+          // <ManagerRouter>
+          <Personal />
+          // </ManagerRouter>
+        ),
+      }
     ],
   },
 ]);

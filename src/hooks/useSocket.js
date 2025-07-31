@@ -39,7 +39,7 @@ export const useSocket = () => {
       }
 
       setIsConnecting(true);
-
+      //创建新的socket链连接
       const socket = io(SOCKET_CONFIG.url, {
         ...SOCKET_CONFIG.options,
         query: {

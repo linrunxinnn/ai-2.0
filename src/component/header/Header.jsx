@@ -38,6 +38,7 @@ const HeaderBar = ({ title, avatar }) => {
       key: "profile",
       icon: <UserOutlined />,
       label: user.name,
+      onClick: () => navigate("/Personal"),
     },
     {
       key: "logout",
