@@ -22,9 +22,8 @@ import { getUserById, loginUser } from "../../store/slice/userSlice.js";
 import { useDispatch } from "react-redux";
 import { faceLogin } from "../../api/userservice/user.js";
 import { encryptData } from "../../utils/encrypt.js";
-import { formDataImagesToBase64Json } from "../../utils/func.js";
-
-const MAX_ATTEMPTS = 10;
+import { fileToBase64 } from "../../utils/func.js";
+import { useSocket } from "../../hooks/useSocket.js";
 
 const LoginForm = () => {
   const [form] = Form.useForm();
@@ -34,7 +33,11 @@ const LoginForm = () => {
   const [loginType, setLoginType] = useState("email");
   const videoRef = useRef(null);
   const streamRef = useRef(null);
-
+  const captureIntervalRef = useRef(null); // 用于存储定时器引用
+  const { socket, isConnected } = useSocket(); // 引入socket
+  const FACE_RECOGNITION_TIMEOUT = 10000; // 人脸识别登录10秒超时
+  const [isFaceRecognitionActive, setIsFaceRecognitionActive] = useState(false);
+  //账号登录
   const handleAccountLogin = async (values) => {
     setLoading(true);
     try {
@@ -61,20 +64,26 @@ const LoginForm = () => {
     }
   };
 
+  const toggleLoginType = () => {
+    form.resetFields(); // 切换时清空字段
+    setLoginType((prev) => (prev === "email" ? "phone" : "email"));
+  };
   // 初始化摄像头
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      // 将获取到的媒体流保存在 streamRef.current 中
       streamRef.current = stream;
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+        videoRef.current.srcObject = stream;// 播放视频
+        await videoRef.current.play();// play() 是异步操作（可能需要等待用户授权、硬件准备等）
       }
     } catch (error) {
       message.error("无法访问摄像头");
     }
   };
 
+  //关闭摄像头
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
   };
@@ -86,36 +95,120 @@ const LoginForm = () => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
+    // 绘制视频帧
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     return new Promise((resolve) => {
       canvas.toBlob((blob) => {
         resolve(blob);
       }, "image/jpeg");
+      // 将图片转换为blob，指定图片格式为jpeg
     });
   };
 
-  const toggleLoginType = () => {
-    form.resetFields(); // 切换时清空字段
-    setLoginType((prev) => (prev === "email" ? "phone" : "email"));
+  // 发送照片的函数
+  const sendPhotoViaSocket = async () => {
+    try {
+      const blob = await takePhotoBlob();
+      if (isConnected && socket) {
+        // 发送照片数据
+        const base64Image = await fileToBase64(blob);
+        socket.emit("face_capture", {
+          image: base64Image,
+        });
+      }
+    } catch (error) {
+      console.error("发送照片失败:", error);
+      message.error("发送照片失败");
+    }
   };
+  // 处理服务器响应的函数
+  async function handleFaceCaptureResponse(data) {
+    console.log("收到服务器响应:", data);
+    if (data.success) {
+      try {
+        // 清除所有定时器
+        if (captureIntervalRef.current) {
+          // 清除超时定时器
+          if (captureIntervalRef.current.timeoutId) {
+            clearTimeout(captureIntervalRef.current.timeoutId);
+          }
+          // 清除拍照定时器
+          if (captureIntervalRef.current.intervalId) {
+            clearInterval(captureIntervalRef.current.intervalId);
+          }
+          captureIntervalRef.current = null;
+        }
 
-  // const handleFaceLogin = async () => {
-  //   setLoading(true);
-  //   try {
-  //     await new Promise((resolve) => setTimeout(resolve, 1000));
-  //     //调用封装完的login函数
-  //     message.success("人脸识别登录成功");
-  //   } catch {
-  //     message.error("人脸识别失败");
-  //   } finally {
-  //     setLoading(false);
-  //   }
-  // };
+        message.success("人脸识别成功");
+        //关闭摄像头
+        stopCamera();
+        setIsFaceRecognitionActive(false);
 
+        // 根据data里面的id去获取用户信息
+        const result = await dispatch(
+          getUserById(data.id)
+        ).unwrap();
+
+        console.log("获取用户信息成功", result);
+        message.success(`登录成功，欢迎 ${result.name}`);
+
+        // 登录成功后跳转到主页
+        navigate("/Home");
+      } catch (error) {
+        console.error("获取用户信息失败:", error);
+        message.error("获取用户信息失败");
+      }
+      setIsFaceRecognitionActive(false); // 出错时也要重置状态
+    } else {
+      message.error("人脸识别失败: 继续识别");
+      setIsFaceRecognitionActive(false); // 出错时也要重置状态
+    }
+  }
+
+  // 组件卸载时的清理
+  useEffect(() => {
+    // 清理函数 - 组件卸载时执行
+    return () => {
+      // 清除所有定时器
+      if (captureIntervalRef.current) {
+        // 清除超时定时器
+        if (captureIntervalRef.current.timeoutId) {
+          clearTimeout(captureIntervalRef.current.timeoutId);
+        }
+        // 清除拍照定时器
+        if (captureIntervalRef.current.intervalId) {
+          clearInterval(captureIntervalRef.current.intervalId);
+        }
+        captureIntervalRef.current = null;
+      }
+      // 关闭摄像头
+      stopCamera();
+    };
+  }, []);
+
+  // 在 useEffect 中设置事件监听
+  useEffect(() => {
+    if (socket) {
+      // 监听服务器对人脸捕捉的响应
+      socket.on("face_capture_response", handleFaceCaptureResponse);
+
+      // 清理函数
+      return () => {
+        socket.off("face_capture_response", handleFaceCaptureResponse);
+      };
+    }
+  }, [socket]);
+
+
+  //点击识别人脸登录按钮
   const handleFaceLogin = async () => {
+    if (isFaceRecognitionActive || loading) {
+      return;
+    }
+
     setLoading(true);
-    let success = false;
+    setIsFaceRecognitionActive(true); // 设置为人脸识别进行中
 
     try {
       await startCamera();
@@ -128,55 +221,54 @@ const LoginForm = () => {
       ) {
         throw new Error("摄像头视频未就绪");
       }
+
+      // 开始定时捕捉照片并发送
+      const intervalId = setInterval(sendPhotoViaSocket, 1000);
+
+      // 设置超时器
+      const timeoutId = setTimeout(() => {
+        // 超时处理
+        message.error("人脸识别超时");
+
+        // 清除拍照定时器
+        clearInterval(intervalId);
+
+        // 关闭摄像头
+        stopCamera();
+
+        // 设置加载状态为false
+        setLoading(false);
+        setIsFaceRecognitionActive(false);
+      }, FACE_RECOGNITION_TIMEOUT);
+
+      // 创建一个对象来存储定时器引用
+      captureIntervalRef.current = {
+        intervalId: intervalId,
+        timeoutId: timeoutId
+      };
     } catch (error) {
       message.error("摄像头初始化失败：" + error.message);
+      console.log("摄像头初始化失败：", error);
+      setLoading(false);
+      setIsFaceRecognitionActive(false); // 出错时也要重置状态
+      return;
     }
-    var flow_hash = "";
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const blob = await takePhotoBlob();
-      console.log(`第${attempt}次尝试识别人脸...`);
-      const formData = new FormData();
-      formData.append("images", blob, "face.jpg");
-      try {
-        const base64Images = await formDataImagesToBase64Json(formData);
-        const encryptedImages = base64Images.map((base64Str) => {
-          // 确保 base64Str 是一个字符串。formDataImagesToBase64Json 应该返回字符串。
-          // 如果它可能返回其他类型，请在此处进行转换，例如 String(base64Str)
-          // return encryptData(base64Str);
-          return base64Str; // 这里假设 base64Str 已经是加密的字符串
-        });
-        const payload = {
-          user_id: null,
-          type: "face",
-          hash: flow_hash,
-          input: {
-            type: "predict",
-            imgs: encryptedImages,
-          },
-        };
-        const result = await faceLogin(payload);
-        console.log(result);
-        if (result.output.user_id != null)
-          message.success(result.output.user_id);
-        flow_hash = result.hash;
-        //todo 这里可能因为返回的数据为空识别为失败，一直当错误了
-        console.log(`第${attempt}次识别结果：`, result);
-        // dispatch(getUserById(result.data?.user_id));
-        dispatch(getUserById(result.user_id));
-      } catch (error) {
-        console.error(`第${attempt}次请求失败`, error);
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 800));
-    }
-
-    if (!success) {
-      message.error("识别失败次数过多，请稍后再试");
-    }
-
     setLoading(false);
-    stopCamera();
   };
+
+  // 添加 useEffect 来处理组件卸载时的清理
+  useEffect(() => {
+    // 清理函数 - 组件卸载时执行
+    return () => {
+      // 清除定时器
+      if (captureIntervalRef.current) {
+        clearInterval(captureIntervalRef.current);
+        captureIntervalRef.current = null;
+      }
+      // 关闭摄像头
+      stopCamera();
+    };
+  }, []);
 
   const tabItems = [
     {
@@ -253,6 +345,26 @@ const LoginForm = () => {
             type="warning"
             style={{ width: "100%" }}
           />
+          {/* 实时展示摄像头的内容 */}
+          <div style={{
+            width: '100%',
+            display: 'flex',
+            justifyContent: 'center',
+            marginBottom: '10px'
+          }}>
+            <video
+              ref={videoRef}
+              style={{
+                width: '320px',
+                height: '240px',
+                borderRadius: '8px',
+                border: '1px solid #d9d9d9',
+                display: 'block'
+              }}
+              autoPlay
+              muted
+            />
+          </div>
           <Button
             type="primary"
             icon={<SmileOutlined />}
@@ -269,7 +381,6 @@ const LoginForm = () => {
 
   return (
     <div className="flex justify-center items-center h-screen bg-gray-100">
-      <video ref={videoRef} style={{ display: "none" }} muted />
       <Card style={{ width: 400, border: "none" }}>
         <Tabs defaultActiveKey="account" items={tabItems} />
       </Card>
