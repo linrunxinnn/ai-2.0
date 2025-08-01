@@ -3,8 +3,9 @@ import { Button, message, Alert } from "antd";
 import { useSelector } from "react-redux";
 import style from "./Collect.module.css";
 import { useNavigate } from "react-router-dom";
-import { useSocket } from "../hooks/useSocket.js";
 import { fileToBase64 } from "../utils/func.js";
+import faceRecognitionSocketManager from "../utils/websocketCapture";
+
 const Collect = () => {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
@@ -12,9 +13,20 @@ const Collect = () => {
   const [collecting, setCollecting] = useState(false);
   const userId = useSelector((state) => state.user.id);
   const navigate = useNavigate();
-  const { socket, isConnected } = useSocket();
 
   useEffect(() => {
+    // 初始化WebSocket连接
+    const initSocket = async () => {
+      try {
+        await faceRecognitionSocketManager.init();
+      } catch (error) {
+        console.error("WebSocket初始化失败:", error);
+        message.error("无法连接到人脸采集服务");
+      }
+    };
+
+    initSocket();
+
     // 打开摄像头
     const startCamera = async () => {
       try {
@@ -44,35 +56,36 @@ const Collect = () => {
       if (captureIntervalRef.current) {
         clearInterval(captureIntervalRef.current);
       }
+      // 断开WebSocket连接
+      faceRecognitionSocketManager.disconnect();
     };
   }, []);
 
   // Socket事件监听
   useEffect(() => {
-    if (socket) {
-      // 监听连接断开
-      const handleDisconnect = () => {
-        if (collecting) {
-          handleStop();
-          message.error("Socket 连接已断开，采集已停止");
-        }
-      };
+    // 监听连接断开
+    const handleDisconnect = () => {
+      if (collecting) {
+        handleStop();
+        message.error("人脸采集服务连接已断开，采集已停止");
+      }
+    };
 
-      // 监听服务器响应
-      const handleServerResponse = (response) => {
-        handleServerResponseInternal(response);
-      };
+    // 监听服务器响应
+    const handleServerResponse = (response) => {
+      handleServerResponseInternal(response);
+    };
 
-      socket.on("disconnect", handleDisconnect);
-      socket.on("face_capture_response", handleServerResponse);
-
-      // 清理事件监听器
-      return () => {
-        socket.off("disconnect", handleDisconnect);
-        socket.off("face_capture_response", handleServerResponse);
-      };
-    }
-  }, [socket]); // 移除了collecting依赖，避免重复绑定事件监听器
+    // 设置回调
+    faceRecognitionSocketManager.setCallbacks({
+      onFaceCaptureResponse: handleServerResponse,
+      onDisconnect: handleDisconnect,
+      onError: (error) => {
+        console.error("WebSocket错误:", error);
+        message.error("人脸采集服务发生错误");
+      }
+    });
+  }, [collecting]);
 
   //关闭摄像头
   const stopCamera = () => {
@@ -96,22 +109,30 @@ const Collect = () => {
   };
 
   const handleStart = () => {
-    if (!isConnected || !socket) {
-      message.error("Socket未连接");
+    if (!faceRecognitionSocketManager.getStatus()) {
+      message.error("人脸采集服务未连接");
       return;
     }
 
     setCollecting(true);
 
-    // 开始定时捕获并发送图片
+    // 第一个请求：只发送用户ID
+    if (faceRecognitionSocketManager.getStatus()) {
+      faceRecognitionSocketManager.send({
+        type: "face_train",
+        user_id: userId,
+        hash: ""
+      });
+    }
+
+    // 第二个请求：开始定时捕获并发送图片
     captureIntervalRef.current = setInterval(async () => {
       try {
         const blob = await takePhotoBlob();
-        if (isConnected && socket) {
-          const base64Image = await fileToBase64(blob);
-          socket.emit("face_capture", {
-            image: base64Image,
-            id: userId,
+        if (faceRecognitionSocketManager.getStatus()) {
+          faceRecognitionSocketManager.send({
+            type: "face_train",
+            image: blob,
           });
         }
       } catch (error) {
@@ -124,7 +145,7 @@ const Collect = () => {
   //停止采集
   const handleServerResponseInternal = (response) => {
     // 只有当服务器返回成功时才停止采集
-    if (response.success) {
+    if (response.message === "success") {
       // 停止采集
       if (captureIntervalRef.current) {
         clearInterval(captureIntervalRef.current);
@@ -137,6 +158,7 @@ const Collect = () => {
     } else {
       // 如果服务器返回失败，继续采集
       console.log("人脸采集失败，继续采集...");
+      message.error("人脸采集失败，请调整角度重试");
     }
   };
 
