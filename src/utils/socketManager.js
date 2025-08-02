@@ -190,6 +190,8 @@ class SocketManager {
     this.sockets.text.send(JSON.stringify(handshakeData));
   }
 
+  //
+
   // 处理文本消息
   handleTextMessage(event) {
     try {

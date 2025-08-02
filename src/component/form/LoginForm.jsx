@@ -24,7 +24,7 @@ import { faceLogin } from "../../api/userservice/user.js";
 import { encryptData } from "../../utils/encrypt.js";
 import { fileToBase64 } from "../../utils/func.js";
 // Deleted:import { useSocket } from "../../hooks/useSocket.js";
-import faceRecognitionSocketManager from "../../utils/websocketCapture.js"
+import faceRecognitionSocketManager from "../../utils/websocketCapture.js";
 
 const LoginForm = () => {
   const [form] = Form.useForm();
@@ -44,16 +44,13 @@ const LoginForm = () => {
       console.log("登录信息：", values);
       const result = await dispatch(
         loginUser({
-          identity: encryptData(values.identity), // Make sure your encryption key is consistent here! "HHH" is too short.
-          password: encryptData(values.password), // Use the full 16-byte key
+          identity: encryptData(values.identity),
+          password: encryptData(values.password),
         })
       ).unwrap();
 
-      // --- Corrected Lines ---
-      // 'result' itself is the decrypted user object from the Redux thunk
-      console.log("登录成功", result); // Changed from result.payload to result
-      message.success(`登录成功，欢迎 ${result.name}`); // Changed from result.data.name to result.name
-      // --- End Corrected Lines ---
+      console.log("登录成功", result);
+      message.success(`登录成功，欢迎 ${result.name}`);
 
       navigate("/Home");
     } catch (error) {
@@ -75,8 +72,8 @@ const LoginForm = () => {
       // 将获取到的媒体流保存在 streamRef.current 中
       streamRef.current = stream;
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;// 播放视频
-        await videoRef.current.play();// play() 是异步操作（可能需要等待用户授权、硬件准备等）
+        videoRef.current.srcObject = stream; // 播放视频
+        await videoRef.current.play(); // play() 是异步操作（可能需要等待用户授权、硬件准备等）
       }
     } catch (error) {
       message.error("无法访问摄像头");
@@ -141,9 +138,7 @@ const LoginForm = () => {
         setIsFaceRecognitionActive(false);
 
         // 根据data里面的id去获取用户信息
-        const result = await dispatch(
-          getUserById(response.user_id)
-        ).unwrap();
+        const result = await dispatch(getUserById(response.user_id)).unwrap();
 
         console.log("获取用户信息成功", result);
         message.success(`登录成功，欢迎 ${result.name}`);
@@ -220,7 +215,7 @@ const LoginForm = () => {
       onError: (error) => {
         console.error("WebSocket错误:", error);
         message.error("人脸识别服务发生错误");
-      }
+      },
     });
 
     // 清理函数
@@ -229,7 +224,6 @@ const LoginForm = () => {
       faceRecognitionSocketManager.disconnect();
     };
   }, []);
-
 
   //点击识别人脸登录按钮
   const handleFaceLogin = async () => {
@@ -357,20 +351,22 @@ const LoginForm = () => {
             style={{ width: "100%" }}
           />
           {/* 实时展示摄像头的内容 */}
-          <div style={{
-            width: '100%',
-            display: 'flex',
-            justifyContent: 'center',
-            marginBottom: '10px'
-          }}>
+          <div
+            style={{
+              width: "100%",
+              display: "flex",
+              justifyContent: "center",
+              marginBottom: "10px",
+            }}
+          >
             <video
               ref={videoRef}
               style={{
-                width: '320px',
-                height: '240px',
-                borderRadius: '8px',
-                border: '1px solid #d9d9d9',
-                display: 'block'
+                width: "320px",
+                height: "240px",
+                borderRadius: "8px",
+                border: "1px solid #d9d9d9",
+                display: "block",
               }}
               autoPlay
               muted
