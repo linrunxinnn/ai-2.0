@@ -10,7 +10,6 @@ import {
   Alert,
 } from "antd";
 import {
-  UserOutlined,
   LockOutlined,
   SmileOutlined,
   MailOutlined,
@@ -20,11 +19,8 @@ import { useNavigate } from "react-router-dom";
 const { Text } = Typography;
 import { getUserById, loginUser } from "../../store/slice/userSlice.js";
 import { useDispatch } from "react-redux";
-import { faceLogin } from "../../api/userservice/user.js";
 import { encryptData } from "../../utils/encrypt.js";
-import { fileToBase64 } from "../../utils/func.js";
-// Deleted:import { useSocket } from "../../hooks/useSocket.js";
-import faceRecognitionSocketManager from "../../utils/websocketCapture.js"
+
 
 const LoginForm = () => {
   const [form] = Form.useForm();
@@ -34,250 +30,278 @@ const LoginForm = () => {
   const [loginType, setLoginType] = useState("email");
   const videoRef = useRef(null);
   const streamRef = useRef(null);
-  const captureIntervalRef = useRef(null); // 用于存储定时器引用
-  const FACE_RECOGNITION_TIMEOUT = 10000; // 人脸识别登录10秒超时
+  const captureIntervalRef = useRef(null); // 定时器引用
+  const socketRef = useRef(null); // WebSocket实例引用
   const [isFaceRecognitionActive, setIsFaceRecognitionActive] = useState(false);
-  //账号登录
+  const [socketStatus, setSocketStatus] = useState("未连接"); // WebSocket连接状态
+  //WebSocket服务器地址(根据实际修改)
+  const WS_URL = "ws://192.168.58.1:33042/face_predict";
+
   const handleAccountLogin = async (values) => {
     setLoading(true);
     try {
       console.log("登录信息：", values);
       const result = await dispatch(
         loginUser({
-          identity: encryptData(values.identity), // Make sure your encryption key is consistent here! "HHH" is too short.
-          password: encryptData(values.password), // Use the full 16-byte key
+          identity: encryptData(values.identity),
+          password: encryptData(values.password),
         })
       ).unwrap();
 
-      // --- Corrected Lines ---
-      // 'result' itself is the decrypted user object from the Redux thunk
-      console.log("登录成功", result); // Changed from result.payload to result
-      message.success(`登录成功，欢迎 ${result.name}`); // Changed from result.data.name to result.name
-      // --- End Corrected Lines ---
-
+      console.log("登录成功", result);
+      message.success(`登录成功，欢迎 ${result.name}`);
       navigate("/Home");
     } catch (error) {
-      message.error("登录失败");
+      message.error("登录失败：" + (error.message || "账号或密码错误"));
       console.error("登录失败", error);
     } finally {
       setLoading(false);
     }
   };
 
+  // 切换登录类型
   const toggleLoginType = () => {
-    form.resetFields(); // 切换时清空字段
+    form.resetFields();
     setLoginType((prev) => (prev === "email" ? "phone" : "email"));
   };
+
   // 初始化摄像头
   const startCamera = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      // 将获取到的媒体流保存在 streamRef.current 中
+      // 先停止可能存在的旧流
+      stopCamera();
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480 } // 指定分辨率，平衡性能和清晰度
+      });
       streamRef.current = stream;
+
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;// 播放视频
-        await videoRef.current.play();// play() 是异步操作（可能需要等待用户授权、硬件准备等）
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        console.log("摄像头初始化成功");
       }
+      return true;
     } catch (error) {
-      message.error("无法访问摄像头");
+      message.error("无法访问摄像头：" + error.message);
+      console.error("摄像头访问失败:", error);
+      return false;
     }
   };
 
-  //关闭摄像头
+  // 关闭摄像头
   const stopCamera = () => {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
   };
 
-  // 拍照并返回 Blob 图像数据
+  // 拍照并返回Blob
   const takePhotoBlob = () => {
-    const video = videoRef.current;
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d");
-    // 绘制视频帧
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
     return new Promise((resolve) => {
+      const video = videoRef.current;
+      if (!video) {
+        resolve(null);
+        return;
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
       canvas.toBlob((blob) => {
         resolve(blob);
-      }, "image/jpeg");
-      // 将图片转换为blob，指定图片格式为jpeg
+      }, "image/jpeg", 0.7); // 压缩质量0.7，减少数据量
     });
   };
 
-  // 发送照片的函数
+  // 初始化WebSocket连接
+  const initWebSocket = () => {
+    // 关闭已有连接
+    if (socketRef.current) {
+      socketRef.current.close();
+    }
+
+    setSocketStatus("连接中...");
+    socketRef.current = new WebSocket(WS_URL);
+
+    // 连接成功
+    socketRef.current.onopen = () => {
+      console.log("WebSocket连接已建立");
+      setSocketStatus("已连接");
+      message.success("人脸识别服务已连接");
+    };
+
+    // 接收消息
+    socketRef.current.onmessage = (event) => {
+      try {
+        const response = JSON.parse(event.data);
+        console.log("收到服务器响应:", response);
+        handleFaceCaptureResponse(response);
+      } catch (error) {
+        console.error("解析服务器消息失败:", error);
+        message.error("人脸识别服务响应异常");
+      }
+    };
+
+    // 连接关闭
+    socketRef.current.onclose = (event) => {
+      console.log(`WebSocket连接关闭，代码: ${event.code}, 原因: ${event.reason}`);
+      setSocketStatus("已断开");
+
+      // 如果是识别过程中断开，提示用户
+      if (isFaceRecognitionActive) {
+        message.warning("人脸识别服务连接断开");
+      }
+    };
+
+    // 连接错误
+    socketRef.current.onerror = (error) => {
+      console.error("WebSocket错误:", error);
+      setSocketStatus("连接错误");
+      message.error("人脸识别服务连接出错");
+
+      // 清除定时器
+      if (captureIntervalRef.current) {
+        clearInterval(captureIntervalRef.current);
+        captureIntervalRef.current = null;
+      }
+
+      // 如果正在进行人脸识别，停止它
+      if (isFaceRecognitionActive) {
+        stopCamera();
+        setIsFaceRecognitionActive(false);
+        setLoading(false);
+      }
+    };
+  };
+
+  // 发送照片到服务器
   const sendPhotoViaSocket = async () => {
+    // 检查连接状态
+    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
+      console.log("WebSocket未连接，无法发送照片");
+      return;
+    }
+
     try {
       const blob = await takePhotoBlob();
-      // Deleted:if (isConnected && socket) {
-      if (faceRecognitionSocketManager.getStatus()) {
-        // 发送照片数据
-        // Deleted:socket.emit("face_capture", {
-        faceRecognitionSocketManager.send({
-          type: "face_predict",
-          image: blob,
-        });
+      if (!blob) {
+        console.log("拍照失败，无法发送");
+        return;
       }
+
+      // 直接发送二进制图片数据
+      socketRef.current.send(blob);
     } catch (error) {
       console.error("发送照片失败:", error);
       message.error("发送照片失败");
     }
   };
-  // 处理服务器响应的函数
-  async function handleFaceCaptureResponse(response) {
-    console.log("收到服务器响应:", response);
+
+
+  // 处理服务器人脸识别响应
+  const handleFaceCaptureResponse = async (response) => {
     if (response.message === "success") {
       try {
-        // 清除所有定时器
-        if (captureIntervalRef.current) {
-          clearInterval(captureIntervalRef.current);
-          captureIntervalRef.current = null;
-        }
+        // 清除定时器
+        clearInterval(captureIntervalRef.current);
+        captureIntervalRef.current = null;
 
-        message.success("人脸识别成功");
-        //关闭摄像头
+        message.success("人脸识别成功，正在登录...");
         stopCamera();
         setIsFaceRecognitionActive(false);
 
-        // 根据data里面的id去获取用户信息
-        const result = await dispatch(
-          getUserById(response.user_id)
-        ).unwrap();
-
-        console.log("获取用户信息成功", result);
+        // 获取用户信息并跳转
+        const result = await dispatch(getUserById(response.user_id)).unwrap();
         message.success(`登录成功，欢迎 ${result.name}`);
-
-        // 登录成功后跳转到主页
         navigate("/Home");
       } catch (error) {
         console.error("获取用户信息失败:", error);
-        message.error("获取用户信息失败");
-        // 关闭摄像头
+        message.error("登录失败：获取用户信息失败");
         stopCamera();
         setIsFaceRecognitionActive(false);
+        setLoading(false);
       }
     } else if (response.message === "fail") {
-      // 清除所有定时器
-      if (captureIntervalRef.current) {
-        clearInterval(captureIntervalRef.current);
-        captureIntervalRef.current = null;
-      }
-
-      message.error("人脸识别失败");
-      //关闭摄像头
+      clearInterval(captureIntervalRef.current);
+      captureIntervalRef.current = null;
+      message.error("人脸识别失败：" + (response.reason || "未匹配到用户"));
       stopCamera();
       setIsFaceRecognitionActive(false);
+      setLoading(false); // 添加这一行
     } else {
       // 继续识别
-      message.error("人脸识别中: 继续识别");
+      message.info("请保持人脸在镜头前...");
     }
-  }
-
-  // 组件卸载时的清理
-  useEffect(() => {
-    // 清理函数 - 组件卸载时执行
-    return () => {
-      // 清除所有定时器
-      if (captureIntervalRef.current) {
-        // 清除超时定时器
-        if (captureIntervalRef.current.timeoutId) {
-          clearTimeout(captureIntervalRef.current.timeoutId);
-        }
-        // 清除拍照定时器
-        if (captureIntervalRef.current.intervalId) {
-          clearInterval(captureIntervalRef.current.intervalId);
-        }
-        captureIntervalRef.current = null;
-      }
-      // 关闭摄像头
-      stopCamera();
-    };
-  }, []);
-
-  // 在 useEffect 中设置事件监听
-  useEffect(() => {
-    // 初始化WebSocket连接
-    const initSocket = async () => {
-      try {
-        await faceRecognitionSocketManager.init();
-      } catch (error) {
-        console.error("WebSocket初始化失败:", error);
-        message.error("无法连接到人脸识别服务");
-      }
-    };
-
-    initSocket();
-
-    // 监听服务器对人脸捕捉的响应
-    const handleServerResponse = (response) => {
-      handleFaceCaptureResponse(response.data);
-    };
-
-    // 设置回调
-    faceRecognitionSocketManager.setCallbacks({
-      onFaceLoginResponse: handleServerResponse,
-      onError: (error) => {
-        console.error("WebSocket错误:", error);
-        message.error("人脸识别服务发生错误");
-      }
-    });
-
-    // 清理函数
-    return () => {
-      // Deleted:socket.off("face_capture_response", handleFaceCaptureResponse);
-      faceRecognitionSocketManager.disconnect();
-    };
-  }, []);
-
-
-  //点击识别人脸登录按钮
-  const handleFaceLogin = async () => {
-    if (isFaceRecognitionActive || loading) {
-      return;
-    }
-
-    setLoading(true);
-    setIsFaceRecognitionActive(true); // 设置为人脸识别进行中
-
-    try {
-      await startCamera();
-
-      // 确保视频尺寸准备好
-      if (
-        !videoRef.current ||
-        videoRef.current.videoWidth === 0 ||
-        videoRef.current.videoHeight === 0
-      ) {
-        throw new Error("摄像头视频未就绪");
-      }
-
-      // 开始定时捕捉照片并发送
-      const intervalId = setInterval(sendPhotoViaSocket, 1000);
-
-      // 存储定时器引用
-      captureIntervalRef.current = intervalId;
-    } catch (error) {
-      message.error("摄像头初始化失败：" + error.message);
-      console.log("摄像头初始化失败：", error);
-      setLoading(false);
-      setIsFaceRecognitionActive(false); // 出错时也要重置状态
-      return;
-    }
-    setLoading(false);
   };
 
-  // 添加 useEffect 来处理组件卸载时的清理
+  // 开始人脸识别登录
+  const handleFaceLogin = async () => {
+    if (isFaceRecognitionActive || loading) return;
+
+    setLoading(true);
+    setIsFaceRecognitionActive(true);
+
+    try {
+      // 1. 检查WebSocket连接
+      if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
+        message.info("正在连接人脸识别服务...");
+        initWebSocket();
+        // 等待连接成功（最多等5秒）
+        let attempts = 0;
+        const maxAttempts = 15; // 最多尝试15次（5秒）
+        await new Promise((resolve, reject) => {
+          const checkInterval = setInterval(() => {
+            attempts++;
+            if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+              clearInterval(checkInterval);
+              resolve(true);
+            } else if (attempts >= maxAttempts) {
+              clearInterval(checkInterval);
+              reject(new Error("连接人脸识别服务超时"));
+            }
+          }, 300);
+        });
+      }
+
+      // 2. 初始化摄像头
+      const cameraReady = await startCamera();
+      if (!cameraReady) {
+        throw new Error("摄像头初始化失败");
+      }
+
+      // 3. 开始定时发送照片（每1秒一次）
+      captureIntervalRef.current = setInterval(sendPhotoViaSocket, 1000);
+
+    } catch (error) {
+      console.error("人脸识别启动失败:", error);
+      message.error("启动失败：" + error.message);
+      setIsFaceRecognitionActive(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 组件卸载时清理
   useEffect(() => {
-    // 清理函数 - 组件卸载时执行
     return () => {
-      // 清除所有定时器
+      // 清除定时器
       if (captureIntervalRef.current) {
         clearInterval(captureIntervalRef.current);
-        captureIntervalRef.current = null;
       }
       // 关闭摄像头
       stopCamera();
+      // 关闭WebSocket连接
+      if (socketRef.current) {
+        socketRef.current.close(1000, "组件卸载");
+      }
     };
   }, []);
 
@@ -352,11 +376,17 @@ const LoginForm = () => {
           }}
         >
           <Alert
-            message="请确保保持人脸位于摄像头前，且光线充足"
+            message={`人脸识别服务状态：${socketStatus}`}
+            type={socketStatus === "已连接" ? "success" :
+              socketStatus === "连接中..." ? "info" : "warning"}
+            style={{ width: "100%" }}
+          />
+          <Alert
+            message="请确保保持人脸位于摄像头前，光线充足"
             type="warning"
             style={{ width: "100%" }}
           />
-          {/* 实时展示摄像头的内容 */}
+
           <div style={{
             width: '100%',
             display: 'flex',
@@ -370,20 +400,24 @@ const LoginForm = () => {
                 height: '240px',
                 borderRadius: '8px',
                 border: '1px solid #d9d9d9',
-                display: 'block'
+                display: 'block',
+                backgroundColor: '#000'
               }}
               autoPlay
               muted
+              playsInline // 解决移动端播放问题
             />
           </div>
+
           <Button
             type="primary"
             icon={<SmileOutlined />}
             block
             onClick={handleFaceLogin}
-            loading={loading}
+            loading={loading || socketStatus === "连接中..."}
+            disabled={isFaceRecognitionActive}
           >
-            识别人脸并登录
+            {isFaceRecognitionActive ? "识别中..." : "识别人脸并登录"}
           </Button>
         </div>
       ),
@@ -392,7 +426,7 @@ const LoginForm = () => {
 
   return (
     <div className="flex justify-center items-center h-screen bg-gray-100">
-      <Card style={{ width: 400, border: "none" }}>
+      <Card style={{ width: 400, border: "none", boxShadow: "0 2px 10px rgba(0,0,0,0.1)" }}>
         <Tabs defaultActiveKey="account" items={tabItems} />
       </Card>
     </div>
